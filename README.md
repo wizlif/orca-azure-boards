@@ -47,9 +47,12 @@ install it from its git URL.
   no tags shows no labels.
 - **Links** — each item opens the real work item page in Azure DevOps.
 - **Creating** — a new work item in a chosen project, given a type, a title and
-  an optional description. The types on offer are the project's own, since a
-  process can withdraw one (`isDisabled`); a withdrawn type is not offered.
-  The created item comes back in the same shape a listed one has.
+  an optional description. The types on offer are the ones a person would
+  actually create: a process-withdrawn type (`isDisabled`) is excluded, and so
+  is one of Azure's own hidden machinery types (`Test Plan`, `Shared Steps`,
+  `Code Review Request`, ...), read from `workitemtypecategories`'
+  `Microsoft.HiddenCategory`. The created item comes back in the same shape a
+  listed one has.
 
 ## Filters and search
 
@@ -80,11 +83,11 @@ it never falls back to returning every item.
 
 - **Create, then read.** No commenting, no state transitions, no assignment, no
   editing. Orca hides those controls rather than offering a dead button.
-- **Every enabled type is offered.** Azure marks a type withdrawn by a process
-  (`isDisabled`) on the type list itself, and those are filtered out. It does
-  not mark its own hidden types there — `Test Plan`, `Shared Steps`, `Code
-  Review Request` and the like are only named by a separate
-  `workitemtypecategories` call, so they are still offered.
+- **Only creatable types are offered.** A type withdrawn by a process
+  (`isDisabled`) and a type in Azure's own hidden category
+  (`Microsoft.HiddenCategory`, from `workitemtypecategories`) are both
+  excluded. If the categories call fails, the list degrades to the
+  `isDisabled`-only filter rather than failing outright.
 - **A new item carries a title and a description only.** Not an assignee, not an
   area or iteration path, not a parent link.
 - **No pagination.** One page of at most 200 items, whatever Orca asks for.

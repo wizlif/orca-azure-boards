@@ -58,14 +58,41 @@ function fromStateName(stateName) {
  *  best-effort guess at terminal state names, in Azure's own casing. */
 const FALLBACK_DONE_STATE_NAMES = ['Closed', 'Completed', 'Removed', 'Done', 'Cancelled', 'Rejected']
 
-function indexProject(workItemTypes) {
+/** Azure does not flag its own hidden machinery types (Test Plan, Shared
+ *  Steps, Code Review Request, ...) with `isDisabled`; they only show up as
+ *  members of this category. The Boards web UI does not offer them either. */
+const HIDDEN_CATEGORY_REFERENCE_NAME = 'Microsoft.HiddenCategory'
+
+/** A failed categories call degrades to the isDisabled-only filter rather
+ *  than failing the whole load: a noisy type list beats no ability to
+ *  create at all. */
+function hiddenTypeNamesFrom(categoriesResponse) {
+  if (!categoriesResponse.ok || !Array.isArray(categoriesResponse.data?.value)) {
+    return new Set()
+  }
+  const hidden = categoriesResponse.data.value.find(
+    (category) => category?.referenceName === HIDDEN_CATEGORY_REFERENCE_NAME
+  )
+  const names = (hidden?.workItemTypes ?? [])
+    .map((type) => type?.name)
+    .filter((name) => typeof name === 'string')
+  return new Set(names)
+}
+
+function indexProject(workItemTypes, hiddenTypeNames) {
   const byTypeAndState = new Map()
   const byState = new Map()
   const creatable = []
   for (const type of workItemTypes) {
     // isDisabled marks a type the project's process has withdrawn, so offering
-    // it would produce a create Azure then refuses.
-    if (typeof type?.name === 'string' && type.isDisabled !== true) {
+    // it would produce a create Azure then refuses. The hidden category is
+    // independent: a type can be enabled yet still be Azure's own machinery
+    // that nobody creates from a task list.
+    if (
+      typeof type?.name === 'string' &&
+      type.isDisabled !== true &&
+      !hiddenTypeNames.has(type.name)
+    ) {
       // Azure's create route addresses a type by name, not by referenceName,
       // so the name is what a later createItem has to send back.
       creatable.push({ id: type.name, name: type.name })
@@ -85,24 +112,33 @@ function indexProject(workItemTypes) {
 export function createWorkItemTypeIndex(api) {
   const byScopeId = new Map()
 
-  /** Failures are not cached: they degrade this call, not every later one. */
+  /** Failures are not cached: they degrade this call, not every later one.
+   *  Categories are fetched alongside types under the same cache entry and
+   *  the same lifetime, rather than as a second independently-cached call. */
   async function load(scopeId, organization, projectId) {
     const cached = byScopeId.get(scopeId)
     if (cached) {
       return { ok: true, data: cached }
     }
-    const response = await api.request({
-      method: 'GET',
-      path: `/${projectId}/_apis/wit/workitemtypes`,
-      organization
-    })
-    if (!response.ok) {
-      return response
+    const [typesResponse, categoriesResponse] = await Promise.all([
+      api.request({
+        method: 'GET',
+        path: `/${projectId}/_apis/wit/workitemtypes`,
+        organization
+      }),
+      api.request({
+        method: 'GET',
+        path: `/${projectId}/_apis/wit/workitemtypecategories`,
+        organization
+      })
+    ])
+    if (!typesResponse.ok) {
+      return typesResponse
     }
-    if (!Array.isArray(response.data.value)) {
+    if (!Array.isArray(typesResponse.data.value)) {
       return failure('unavailable', 'Azure DevOps returned a project with no work item type list.')
     }
-    const index = indexProject(response.data.value)
+    const index = indexProject(typesResponse.data.value, hiddenTypeNamesFrom(categoriesResponse))
     byScopeId.set(scopeId, index)
     return { ok: true, data: index }
   }
