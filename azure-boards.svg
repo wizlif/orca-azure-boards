@@ -1,12 +1,5 @@
-<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-  <!-- Why: a stroked lemniscate stands in for the Azure DevOps infinity
-  mark, monochrome per Orca's provider-icon convention. Two symmetric
-  cubic loops sharing one centre point give the self-crossing for free. -->
-  <path
-    d="M12,12 C9,4 5,4 2,12 C5,20 9,20 12,12 C15,4 19,4 22,12 C19,20 15,20 12,12"
-    stroke="currentColor"
-    stroke-width="3"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <!-- Why: the Azure DevOps mark flattened to a monochrome silhouette, per
+  Orca's provider-icon convention. Rendered as a mask, so only alpha matters. -->
+  <path d="M15 3.622v8.512L11.5 15l-5.425-1.975v1.958L3.004 10.97l8.951.7V4.005L15 3.622zm-2.984.428L6.994 1v2.001L2.382 4.356 1 6.13v4.029l1.978.873V5.869l9.038-1.818z"/>
 </svg>
