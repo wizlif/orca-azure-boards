@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "azure-boards",
+  "publisher": "nssf",
+  "name": "Azure DevOps Boards",
+  "version": "0.1.0",
+  "description": "Reads Azure DevOps Boards work items into the Orca Tasks list.",
+  "engines": { "orca": ">=1.4.0" },
+  "pluginApi": 1,
+  "main": "main.mjs",
+  "contributes": {
+    "taskSources": [{ "id": "azure-boards", "title": "Azure Boards", "icon": "kanban" }]
+  },
+  "capabilities": [{ "kind": "azure-devops:boards" }]
+}
