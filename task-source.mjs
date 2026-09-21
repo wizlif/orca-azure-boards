@@ -1,5 +1,6 @@
 /**
- * The Azure Boards task source: reads work items, and opens new ones.
+ * The Azure Boards task source: reads work items, opens new ones, and reads
+ * and posts their comments.
  *
  * Every method answers the task source envelope. The central rule: an empty
  * `items` array means the board is empty, and may never stand in for an
@@ -11,7 +12,7 @@
 import { createBoardsApi, failure } from './boards-api.mjs'
 import { createWorkItemTypeIndex } from './work-item-types.mjs'
 import { decodeItemId, decodeScopeId, encodeScopeId, isProjectId } from './board-identifiers.mjs'
-import { fetchComments } from './work-item-comments.mjs'
+import { fetchComments, postComment } from './work-item-comments.mjs'
 import {
   createWorkItem,
   escapeWiqlString,
@@ -470,6 +471,31 @@ export function createAzureBoardsTaskSource(host) {
         organization: reference.organization,
         projectId: projectId.data,
         workItemId: reference.workItemId
+      })
+    },
+
+    /** Azure has no reply threading. The host's reply UI composes a quote of
+     *  the original comment into the draft itself before calling this, so
+     *  `body` is the whole comment — quote and all — and this only converts
+     *  it to HTML. */
+    async addComment(params) {
+      const reference = decodeItemId(params?.id)
+      if (!reference) {
+        return failure('validation', ITEM_ID_EXPECTED)
+      }
+      const checked = await checkOrganization(reference.organization)
+      if (!checked.ok) {
+        return checked
+      }
+      const projectId = await resolveItemProjectId(reference)
+      if (!projectId.ok) {
+        return projectId
+      }
+      return postComment(api, {
+        organization: reference.organization,
+        projectId: projectId.data,
+        workItemId: reference.workItemId,
+        body: params?.body
       })
     },
 

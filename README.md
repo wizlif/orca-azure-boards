@@ -51,7 +51,9 @@ install it from its git URL.
   Steps.
 - **Type** — the work item type name ("Bug", "User Story").
 - **Comments** — the discussion, oldest first, at most one page of 200. Bodies
-  are converted the same way a description is.
+  are converted the same way a description is. New comments can be posted, and
+  a reply is a new comment whose body opens with a quote of the original —
+  Azure has no comment threading, and neither does this.
 - **Links** — each item opens the real work item page in Azure DevOps.
 - **Creating** — a new work item in a chosen project, given a type, a title and
   an optional description. The types on offer are the ones a person would
@@ -123,11 +125,25 @@ Because Orca's comment contract offers only `text` and `html` for a comment
 body, a converted comment is declared `text`: the one value that is true of it.
 Claiming `html` would be both false and unsafe.
 
+## Posting a comment
+
+The plugin's `addComment` converts the caller's Markdown-ish text (paragraphs,
+line breaks, `**bold**`, and `>` blockquotes) into HTML, escaping everything
+else, and posts it. It never accepts raw HTML from the caller.
+
+Azure work item comments have no parent/child threading — there is no reply
+API. A "reply" is Orca's own comment composer prefilling the draft with a
+Markdown blockquote naming the original author and quoting their comment,
+ahead of the new text, the same way the Boards web UI's own "Reply" quotes
+into a new top-level comment. `addComment` doesn't know a reply is happening;
+it just renders the `>` lines it's given as a real `<blockquote>` so Azure
+shows it as one.
+
 ## Current limits
 
-- **Read, and create.** Comments are read-only; no state transitions, no
-  assignment, no editing. Orca hides those controls rather than offering a dead
-  button.
+- **Read, and post.** No state transitions, no assignment, no editing, no
+  comment threading (Azure has none). Orca hides those controls rather than
+  offering a dead button.
 - **One page of comments.** At most 200, newest-first from Azure and re-sorted
   oldest-first. An older comment beyond that page is not fetched.
 - **Comment author avatars are not sent.** Azure's are auth-gated and the
