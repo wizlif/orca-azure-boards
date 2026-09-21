@@ -9,7 +9,7 @@
   "pluginApi": 1,
   "main": "main.mjs",
   "contributes": {
-    "taskSources": [{ "id": "azure-boards", "title": "Azure Boards", "icon": "kanban" }]
+    "taskSources": [{ "id": "azure-boards", "title": "Azure Boards", "icon": "./azure-boards.svg" }]
   },
   "capabilities": [{ "kind": "azure-devops:boards" }]
 }
