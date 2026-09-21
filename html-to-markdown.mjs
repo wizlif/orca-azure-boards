@@ -7,14 +7,14 @@
  * where the decision is visible, rather than passed through.
  *
  * Constructs kept: headings, paragraphs, line breaks, ordered and unordered
- * lists, bold, italic, inline code, code blocks, links, blockquotes and
- * horizontal rules. An unknown element is unwrapped — its text survives, its
- * markup does not. Elements whose content is code, styling or media
- * (script, style, iframe, img, form controls, ...) are dropped whole.
+ * lists, bold, italic, inline code, code blocks, links, blockquotes, tables
+ * and horizontal rules. An image becomes a text placeholder. An unknown
+ * element is unwrapped — its text survives, its markup does not. Elements
+ * whose content is code, styling or non-image media (script, style, iframe,
+ * form controls, ...) are dropped whole.
  */
 
-/** Dropped with their contents: their text is not body text. `img` is here
- *  too — an Azure attachment URL is auth-gated and a data URI is a payload. */
+/** Dropped with their contents: their text is not body text. */
 const DISCARDED_ELEMENTS = new Set([
   'script',
   'style',
@@ -34,7 +34,6 @@ const DISCARDED_ELEMENTS = new Set([
   'source',
   'track',
   'picture',
-  'img',
   'map',
   'form',
   'input',
@@ -257,6 +256,65 @@ function parseHtml(html) {
   return root
 }
 
+const IMAGE_LABEL_MAX = 200
+
+/** An Azure attachment URL carries the uploaded file name, which for a pasted
+ *  screenshot is the only description of it that survives. */
+function attachmentFileName(src) {
+  const match = /[?&]fileName=([^&]*)/i.exec(src)
+  if (match === null) {
+    return ''
+  }
+  try {
+    return collapseWhitespace(decodeURIComponent(match[1].replace(/\+/g, ' '))).trim()
+  } catch {
+    return ''
+  }
+}
+
+/** Azure's editor writes alt="Image" on every pasted screenshot, so that value
+ *  describes no more than a missing alt does. */
+function imageLabel(attributes) {
+  const alt = collapseWhitespace(attributes.alt ?? '').trim()
+  const generic = alt.length === 0 || alt.toLowerCase() === 'image'
+  const description = generic ? attachmentFileName(attributes.src ?? '') : alt
+  return description.length === 0 ? 'Image' : `Image: ${description.slice(0, IMAGE_LABEL_MAX)}`
+}
+
+/** The label re-enters the pipeline as a text node, which decodes entities
+ *  again, so `&` is re-encoded to survive that pass unchanged. */
+function imagePlaceholder(attributes, href) {
+  const children = [{ text: imageLabel(attributes).replace(/&/g, '&amp;') }]
+  return href === null
+    ? { name: 'span', attributes: {}, children }
+    : { name: 'a', attributes: { href }, children }
+}
+
+/**
+ * Turns every `<img>` into a placeholder the reader can see and follow.
+ *
+ * The image itself cannot be shown: an Azure attachment URL is auth-gated, the
+ * renderer holds no credential, and Orca does not proxy one. Dropping the
+ * element instead made an image-only comment arrive empty, which reads as a
+ * named person saying nothing. The `src` is never the link target — it would
+ * answer a sign-in page at best, and a `data:` src is a payload — so the
+ * placeholder points at the work item, which the reader can actually open.
+ * Inside an existing link it stays bare text, because nested markdown links
+ * do not render.
+ */
+function replaceImages(node, itemHref, insideLink) {
+  node.children = node.children.map((child) => {
+    if (child.text !== undefined) {
+      return child
+    }
+    if (child.name === 'img') {
+      return imagePlaceholder(child.attributes, insideLink ? null : itemHref)
+    }
+    replaceImages(child, itemHref, insideLink || child.name === 'a')
+    return child
+  })
+}
+
 /** Escapes what would otherwise read as markup. `<` and `&` are escaped only
  *  when they would start a tag or an entity, so ordinary prose stays legible. */
 function escapeMarkdown(text) {
@@ -412,14 +470,104 @@ function renderCodeBlock(node) {
   return `${fence}\n${body}\n${fence}`
 }
 
-/** A table is not representable in the supported subset; its cells are kept as
- *  one line per row so the text survives even though the grid does not. */
+function cellsOf(node) {
+  return node.children.filter(
+    (child) => child.text === undefined && (child.name === 'td' || child.name === 'th')
+  )
+}
+
+/** A row lives on one line, so a cell's blocks are flattened. Text nodes are
+ *  already pipe-escaped; a pipe from inline code is not, and an unescaped one
+ *  would end the cell early. */
+function renderCell(node) {
+  return collapseWhitespace(renderChildren(node))
+    .trim()
+    .replace(/\\?\|/g, (match) => (match === '|' ? '\\|' : match))
+}
+
+/** A stray `<tr>` outside any table: its cells are kept as one line so the
+ *  text survives even though there is no grid to put it in. */
 function renderRow(node) {
-  const cells = node.children
-    .filter((child) => child.text === undefined && (child.name === 'td' || child.name === 'th'))
-    .map((cell) => collapseWhitespace(renderChildren(cell)).trim())
+  return cellsOf(node)
+    .map((cell) => renderCell(cell))
     .filter((cell) => cell.length > 0)
-  return cells.join(' | ')
+    .join(' | ')
+}
+
+/** Collects a table's cell rows in document order. A `<table>` reached from
+ *  here belongs to a cell, not to this grid, so it is not descended into. */
+function tableRowsOf(node, rows) {
+  for (const child of node.children) {
+    if (child.text !== undefined || child.name === 'table' || DISCARDED_ELEMENTS.has(child.name)) {
+      continue
+    }
+    if (child.name === 'tr') {
+      rows.push(cellsOf(child))
+      continue
+    }
+    tableRowsOf(child, rows)
+  }
+}
+
+function containsTable(node) {
+  if (node.text !== undefined) {
+    return false
+  }
+  return node.name === 'table' || node.children.some(containsTable)
+}
+
+function gfmRow(cells, width) {
+  const padded = Array.from({ length: width }, (_unused, column) => cells[column] ?? '')
+  return `| ${padded.join(' | ')} |`
+}
+
+/** A grid the supported subset cannot hold: the cells keep their text, one
+ *  line per row, stripped of markdown so an inner grid's own pipes and rules
+ *  cannot break this one. */
+function renderFlattenedRows(rows) {
+  return rows
+    .map((cells) =>
+      cells
+        .map((cell) => escapeMarkdown(collapseWhitespace(rawText(cell))).trim())
+        .filter((cell) => cell.length > 0)
+        .join(' | ')
+    )
+    .filter((row) => row.length > 0)
+    .join('\n')
+}
+
+/**
+ * Renders a table as GFM, header rule included.
+ *
+ * Without the rule a GFM reader runs the rows together as prose, so the grid
+ * is worth the work. Ragged rows are padded to the widest one. A table with no
+ * `<th>` row gets an empty header, which GFM requires and which keeps every
+ * row that carries data in the body. A nested table has no GFM spelling at
+ * all, so such a table is flattened instead.
+ */
+function renderTable(node) {
+  const rows = []
+  tableRowsOf(node, rows)
+  if (rows.some((cells) => cells.some(containsTable))) {
+    return renderFlattenedRows(rows)
+  }
+  const rendered = rows
+    .map((cells) => ({
+      cells: cells.map((cell) => renderCell(cell)),
+      header: cells.length > 0 && cells.every((cell) => cell.name === 'th')
+    }))
+    .filter((row) => row.cells.some((cell) => cell.length > 0))
+  if (rendered.length === 0) {
+    return ''
+  }
+  const width = rendered.reduce((widest, row) => Math.max(widest, row.cells.length), 0)
+  const head = rendered[0].header ? rendered[0].cells : []
+  const body = rendered[0].header ? rendered.slice(1) : rendered
+  const lines = [gfmRow(head, width), gfmRow(Array.from({ length: width }, () => '---'), width)]
+  for (const row of body) {
+    lines.push(gfmRow(row.cells, width))
+  }
+  return lines.join('\n')
 }
 
 function renderBlock(node) {
@@ -443,6 +591,9 @@ function renderBlock(node) {
   if (name === 'blockquote') {
     const body = renderChildren(node)
     return body.length === 0 ? '' : prefixLines(body, '> ', '> ')
+  }
+  if (name === 'table') {
+    return renderTable(node)
   }
   if (name === 'tr') {
     return renderRow(node)
@@ -505,11 +656,15 @@ function renderChildren(node) {
   return joinBlocks(renderBlocks(node))
 }
 
-export function htmlToMarkdown(html) {
+/** `imageHref` is where an image placeholder points — the work item's own
+ *  browser URL. Without one the placeholder is plain text. */
+export function htmlToMarkdown(html, { imageHref = null } = {}) {
   if (typeof html !== 'string' || html.length === 0) {
     return ''
   }
-  return renderChildren(parseHtml(html))
+  const root = parseHtml(html)
+  replaceImages(root, typeof imageHref === 'string' && imageHref.length > 0 ? imageHref : null, false)
+  return renderChildren(root)
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()

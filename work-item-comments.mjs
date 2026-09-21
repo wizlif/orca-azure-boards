@@ -3,9 +3,8 @@
  *
  * Azure stores a comment as HTML or as markdown and says which; neither may be
  * handed to the renderer as HTML, so an HTML comment is converted the same way
- * a description is. Orca's comment contract offers only `'text'` and `'html'`
- * for `bodyFormat`, so a converted body is declared `'text'` — the one value
- * that is true of it. Claiming `'html'` would be both false and unsafe.
+ * a description is, and `bodyFormat` says `'markdown'`. Only a body that was
+ * already plain when it arrived is declared `'text'`.
  */
 
 import { failure } from './boards-api.mjs'
@@ -19,15 +18,26 @@ const COMMENT_PAGE_SIZE = 200
 const BODY_MAX = 128 * 1024
 const COMMENT_ID_MAX = 512
 
+/** A comment carries no browser URL, but its own API URL names the work item
+ *  it belongs to on the origin Azure answered from, which is where an image
+ *  placeholder can point. Assembling that origin here instead would duplicate
+ *  what the host owns. */
+function workItemHrefOf(comment) {
+  const url = typeof comment.url === 'string' ? comment.url : ''
+  const match = /^(https?:\/\/[^/]+\/\S*?)\/_apis\/wit\/workitems\/(\d+)\/comments\//i.exec(url)
+  return match === null ? null : `${match[1]}/_workitems/edit/${match[2]}`
+}
+
 function toBody(comment) {
   const text = typeof comment.text === 'string' ? comment.text : ''
   if (comment.format === 'markdown') {
-    return decodeHtmlEntities(text).trim().slice(0, BODY_MAX)
+    return { body: decodeHtmlEntities(text).trim().slice(0, BODY_MAX), bodyFormat: 'markdown' }
   }
   if (isPlainText(text)) {
-    return text.trim().slice(0, BODY_MAX)
+    return { body: text.trim().slice(0, BODY_MAX), bodyFormat: 'text' }
   }
-  return htmlToMarkdown(text).slice(0, BODY_MAX)
+  const markdown = htmlToMarkdown(text, { imageHref: workItemHrefOf(comment) })
+  return { body: markdown.slice(0, BODY_MAX), bodyFormat: 'markdown' }
 }
 
 /** A comment Orca cannot represent (no id, no author, no timestamp) is left
@@ -45,8 +55,7 @@ function toComment(comment) {
   return {
     id: id.slice(0, COMMENT_ID_MAX),
     author,
-    body: toBody(comment),
-    bodyFormat: 'text',
+    ...toBody(comment),
     createdAt
   }
 }

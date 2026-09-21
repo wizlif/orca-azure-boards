@@ -226,11 +226,16 @@ function toLabels(tags) {
   return labels.length > 0 ? labels : undefined
 }
 
+/** The browser URL of a work item, as Azure reports it. */
+function htmlUrlOf(workItem) {
+  const href = workItem?._links?.html?.href
+  return typeof href === 'string' ? href.slice(0, URL_MAX) : null
+}
+
 export function toTaskItem(workItem, { organization, scope, category }) {
   const fields = workItem.fields ?? {}
   const workItemId = String(workItem.id)
   const stateName = fields['System.State']
-  const htmlUrl = workItem._links?.html?.href
 
   return {
     id: encodeItemId(organization, scope?.projectId ?? null, workItemId),
@@ -246,7 +251,7 @@ export function toTaskItem(workItem, { organization, scope, category }) {
     priority: toPriority(fields['Microsoft.VSTS.Common.Priority']),
     labels: toLabels(fields['System.Tags']),
     assignee: toIdentity(fields['System.AssignedTo']),
-    url: typeof htmlUrl === 'string' ? htmlUrl.slice(0, URL_MAX) : null,
+    url: htmlUrlOf(workItem),
     updatedAt: toIsoDate(fields['System.ChangedDate']),
     scopeId: scope?.id ?? null
   }
@@ -289,7 +294,7 @@ export function toDescription(workItem) {
     if (isPlainText(value)) {
       return { description: value.trim().slice(0, DESCRIPTION_MAX), descriptionFormat: 'text' }
     }
-    const markdown = htmlToMarkdown(value)
+    const markdown = htmlToMarkdown(value, { imageHref: htmlUrlOf(workItem) })
     // An empty conversion (a body that was only markup, e.g. '<div><br></div>')
     // falls through to the other field rather than reporting a body of nothing.
     if (markdown.length > 0) {
