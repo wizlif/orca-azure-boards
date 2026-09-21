@@ -45,6 +45,13 @@ install it from its git URL.
   processes, so it is never relabeled as High/Medium/Low.
 - **Labels** — Azure's `System.Tags`, split on `;` and trimmed. A work item with
   no tags shows no labels.
+- **Description** — the work item body, as markdown. A Bug's body is its **Repro
+  Steps**, every other type's is its **Description**, and either falls back to
+  the other: a Bug opened through the API usually has a Description and no Repro
+  Steps.
+- **Type** — the work item type name ("Bug", "User Story").
+- **Comments** — the discussion, oldest first, at most one page of 200. Bodies
+  are converted the same way a description is.
 - **Links** — each item opens the real work item page in Azure DevOps.
 - **Creating** — a new work item in a chosen project, given a type, a title and
   an optional description. The types on offer are the ones a person would
@@ -79,10 +86,52 @@ matches.
 An unrecognized `filterId` fails with `validation` rather than being ignored —
 it never falls back to returning every item.
 
+## Bodies are markdown, never HTML
+
+Azure stores a description or a comment as HTML or as markdown and says which.
+Orca's task contract has no HTML body format on purpose: the renderer treats a
+body as markdown, and handing it a third party's HTML is an injection vector. So
+the plugin converts, and what it cannot express in markdown it drops here, where
+the decision is visible.
+
+A body Azure already stores as markdown is passed through unchanged, and
+`descriptionFormat` says `markdown`. A body that is plain text with no markup at
+all is passed through as `text`. Everything else is converted from HTML.
+
+**Kept:** headings, paragraphs, line breaks, ordered and unordered lists
+(including nesting), bold, italic, inline code, code blocks, `http(s)` links,
+blockquotes, horizontal rules, and HTML entities (`&quot;` becomes `"`). An
+unrecognized element is unwrapped — its text survives, its markup does not.
+
+**Dropped, silently:**
+
+| Construct | What the reader sees |
+| --- | --- |
+| **Images** (`<img>`, including pasted screenshots) | Nothing. Azure's attachment URLs are auth-gated, so a link would render as a broken image. A comment that is only a screenshot comes back with an **empty body**. About a third of the work item bodies in these organizations carry at least one image. |
+| **Tables** | One line per row, cells joined by ` \| `, with no header rule — so a markdown renderer shows the rows as running text, not a grid. |
+| Underline, strikethrough, text and highlight colours, font sizes | The text, unstyled. |
+| Checkbox state in a checklist | A plain list item; ticked and unticked look the same. |
+| `<dl>` definition lists | Term and definition as separate paragraphs. |
+| `javascript:` and `data:` links | The link text, unlinked. |
+| `<script>`, `<style>`, `<iframe>`, form controls, media | Nothing, contents included. |
+
+A user `@`-mention written in an HTML body converts to the person's name. One
+written in a markdown body stays as Azure stores it — `@<GUID>` — because
+resolving it needs an identity lookup outside the Boards proxy.
+
+Because Orca's comment contract offers only `text` and `html` for a comment
+body, a converted comment is declared `text`: the one value that is true of it.
+Claiming `html` would be both false and unsafe.
+
 ## Current limits
 
-- **Create, then read.** No commenting, no state transitions, no assignment, no
-  editing. Orca hides those controls rather than offering a dead button.
+- **Read, and create.** Comments are read-only; no state transitions, no
+  assignment, no editing. Orca hides those controls rather than offering a dead
+  button.
+- **One page of comments.** At most 200, newest-first from Azure and re-sorted
+  oldest-first. An older comment beyond that page is not fetched.
+- **Comment author avatars are not sent.** Azure's are auth-gated and the
+  renderer holds no credentials, so one would only ever be a broken image.
 - **Only creatable types are offered.** A type withdrawn by a process
   (`isDisabled`) and a type in Azure's own hidden category
   (`Microsoft.HiddenCategory`, from `workitemtypecategories`) are both
@@ -114,8 +163,10 @@ empty response. This plugin treats a success whose body is not JSON as
 | File | Holds |
 | --- | --- |
 | `main.mjs` | `activate` — registers the task source |
-| `task-source.mjs` | The contract methods: `status`, `listScopes`, `listItemTypes`, `listItems`, `getItem`, `createItem` |
+| `task-source.mjs` | The contract methods: `status`, `listScopes`, `listItemTypes`, `listItems`, `getItem`, `listComments`, `createItem` |
 | `boards-api.mjs` | The host proxy call, and the rules for reading its reply |
-| `work-items.mjs` | WIQL (including the search clause), the field batch, the JSON Patch create, and the mapping to Orca's item shape |
+| `work-items.mjs` | WIQL (including the search clause), the field batch, the JSON Patch create, and the mapping to Orca's item and detail shapes |
+| `work-item-comments.mjs` | One page of comments, in the shape Orca renders them |
+| `html-to-markdown.mjs` | The HTML-to-markdown conversion every body goes through |
 | `work-item-types.mjs` | One cache of each project's work item types: Azure workflow states to Orca's four categories, the done/open state name lists the filters query on, and the types a new item may be opened as |
 | `board-identifiers.mjs` | Encoding an organization and project into a scope or item id |

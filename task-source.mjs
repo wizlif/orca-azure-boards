@@ -11,6 +11,7 @@
 import { createBoardsApi, failure } from './boards-api.mjs'
 import { createWorkItemTypeIndex } from './work-item-types.mjs'
 import { decodeItemId, decodeScopeId, encodeScopeId, isProjectId } from './board-identifiers.mjs'
+import { fetchComments } from './work-item-comments.mjs'
 import {
   createWorkItem,
   escapeWiqlString,
@@ -20,6 +21,7 @@ import {
   queryWorkItemIds,
   stateNameOf,
   toTaskItem,
+  toTaskItemDetail,
   workItemTypeOf
 } from './work-items.mjs'
 
@@ -31,7 +33,7 @@ const MESSAGE_MAX = 4096
 
 const SUPPORTS = {
   create: true,
-  comment: false,
+  comment: true,
   transition: false,
   assign: false,
   editTitle: false,
@@ -40,6 +42,9 @@ const SUPPORTS = {
 
 const NOT_CONFIGURED =
   'No Azure DevOps organization is configured. Set ORCA_AZURE_DEVOPS_API_BASE_URL to a comma-separated list of organization base URLs, plus ORCA_AZURE_DEVOPS_TOKEN.'
+
+const ITEM_ID_EXPECTED =
+  'Expected an Azure Boards item id of the form <organization>/<projectId>/<workItemId>.'
 
 const FILTER_ASSIGNED_TO_ME = 'assigned-to-me'
 const FILTER_ALL_OPEN = 'all-open'
@@ -88,10 +93,28 @@ export function createAzureBoardsTaskSource(host) {
     return organizations
   }
 
+  /** An id from another host is refused here rather than by the proxy, which
+   *  would answer for an organization the user never configured. */
+  async function checkOrganization(organization) {
+    const organizations = await configuredOrganizations()
+    if (!organizations.ok) {
+      return organizations
+    }
+    if (
+      !organizations.data.some(
+        (configured) => configured.toLowerCase() === organization.toLowerCase()
+      )
+    ) {
+      return failure(
+        'not_configured',
+        `Azure DevOps organization ${organization} is not configured on this host.`
+      )
+    }
+    return { ok: true, data: organizations.data }
+  }
+
   /** A scope id already carries the organization and project GUID, so a scope
-   *  can be addressed without listing every project first. The organization is
-   *  still checked against the configured set, so an id from elsewhere is
-   *  refused here rather than by the proxy. */
+   *  can be addressed without listing every project first. */
   async function resolveScope(scopeId) {
     const reference = decodeScopeId(scopeId)
     if (!reference) {
@@ -100,21 +123,42 @@ export function createAzureBoardsTaskSource(host) {
         'Expected an Azure Boards scope id of the form <organization>/<projectId>.'
       )
     }
-    const organizations = await configuredOrganizations()
-    if (!organizations.ok) {
-      return organizations
-    }
-    if (
-      !organizations.data.some(
-        (organization) => organization.toLowerCase() === reference.organization.toLowerCase()
-      )
-    ) {
-      return failure(
-        'not_configured',
-        `Azure DevOps organization ${reference.organization} is not configured on this host.`
-      )
+    const checked = await checkOrganization(reference.organization)
+    if (!checked.ok) {
+      return checked
     }
     return { ok: true, data: { scopeId, ...reference } }
+  }
+
+  /** The item id of a row listed with its project resolved carries the GUID
+   *  already; otherwise the work item names its project, and the scope list
+   *  turns that name into the GUID a project-scoped path needs. */
+  async function resolveItemProjectId(reference) {
+    if (reference.projectId) {
+      return { ok: true, data: reference.projectId }
+    }
+    const workItem = await fetchWorkItem(api, {
+      organization: reference.organization,
+      workItemId: reference.workItemId
+    })
+    if (!workItem.ok) {
+      return workItem
+    }
+    const scopes = await loadScopes()
+    if (!scopes.ok) {
+      return scopes
+    }
+    const projectName = projectNameOf(workItem.data)
+    const scope = scopes.data.find(
+      (candidate) =>
+        candidate.organization === reference.organization && candidate.projectName === projectName
+    )
+    return scope
+      ? { ok: true, data: scope.projectId }
+      : failure(
+          'not_found',
+          `No Azure Boards project matches work item ${reference.workItemId} in ${reference.organization}.`
+        )
   }
 
   /** One scope per project across every configured organization. A project is
@@ -365,24 +409,11 @@ export function createAzureBoardsTaskSource(host) {
     async getItem(params) {
       const reference = decodeItemId(params?.id)
       if (!reference) {
-        return failure(
-          'validation',
-          'Expected an Azure Boards item id of the form <organization>/<projectId>/<workItemId>.'
-        )
+        return failure('validation', ITEM_ID_EXPECTED)
       }
-      const organizations = await configuredOrganizations()
-      if (!organizations.ok) {
-        return organizations
-      }
-      if (
-        !organizations.data.some(
-          (organization) => organization.toLowerCase() === reference.organization.toLowerCase()
-        )
-      ) {
-        return failure(
-          'not_configured',
-          `Azure DevOps organization ${reference.organization} is not configured on this host.`
-        )
+      const checked = await checkOrganization(reference.organization)
+      if (!checked.ok) {
+        return checked
       }
 
       const workItem = await fetchWorkItem(api, {
@@ -407,7 +438,7 @@ export function createAzureBoardsTaskSource(host) {
 
       return {
         ok: true,
-        data: toTaskItem(workItem.data, {
+        data: toTaskItemDetail(workItem.data, {
           organization: reference.organization,
           scope,
           category: workItemTypes.categoryOf(
@@ -417,6 +448,29 @@ export function createAzureBoardsTaskSource(host) {
           )
         })
       }
+    },
+
+    /** Azure's comment resource is project-scoped: the organization-level
+     *  spelling answers 404 "controller not found", which would read as a
+     *  deleted work item. */
+    async listComments(params) {
+      const reference = decodeItemId(params?.id)
+      if (!reference) {
+        return failure('validation', ITEM_ID_EXPECTED)
+      }
+      const checked = await checkOrganization(reference.organization)
+      if (!checked.ok) {
+        return checked
+      }
+      const projectId = await resolveItemProjectId(reference)
+      if (!projectId.ok) {
+        return projectId
+      }
+      return fetchComments(api, {
+        organization: reference.organization,
+        projectId: projectId.data,
+        workItemId: reference.workItemId
+      })
     },
 
     async listItemTypes(params) {
