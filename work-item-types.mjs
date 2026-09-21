@@ -1,5 +1,6 @@
 /**
- * Maps an Azure DevOps workflow state onto the four categories Orca renders.
+ * One cache of each project's work item types, serving both readers of it:
+ * the state category of every state, and the types a new item may be opened as.
  *
  * State names are per-process and customizable ("Ready for QA", "QA Testing"),
  * so a name table alone misreads any process it was not written against. Each
@@ -7,6 +8,8 @@
  * is read per project and cached; the name table is the fallback for a project
  * whose types cannot be read.
  */
+
+import { failure } from './boards-api.mjs'
 
 /** Azure's own metastate vocabulary. `Removed` is terminal and out of the
  *  working set, so it reads as done rather than as unclassified. */
@@ -55,10 +58,18 @@ function fromStateName(stateName) {
  *  best-effort guess at terminal state names, in Azure's own casing. */
 const FALLBACK_DONE_STATE_NAMES = ['Closed', 'Completed', 'Removed', 'Done', 'Cancelled', 'Rejected']
 
-function indexProjectStates(workItemTypes) {
+function indexProject(workItemTypes) {
   const byTypeAndState = new Map()
   const byState = new Map()
+  const creatable = []
   for (const type of workItemTypes) {
+    // isDisabled marks a type the project's process has withdrawn, so offering
+    // it would produce a create Azure then refuses.
+    if (typeof type?.name === 'string' && type.isDisabled !== true) {
+      // Azure's create route addresses a type by name, not by referenceName,
+      // so the name is what a later createItem has to send back.
+      creatable.push({ id: type.name, name: type.name })
+    }
     for (const state of type?.states ?? []) {
       const category = CATEGORY_BY_METASTATE[state?.category]
       if (!category || typeof state.name !== 'string') {
@@ -68,28 +79,46 @@ function indexProjectStates(workItemTypes) {
       byState.set(state.name, category)
     }
   }
-  return { byTypeAndState, byState }
+  return { byTypeAndState, byState, creatable }
 }
 
-export function createStateCategoryIndex(api) {
+export function createWorkItemTypeIndex(api) {
   const byScopeId = new Map()
 
+  /** Failures are not cached: they degrade this call, not every later one. */
+  async function load(scopeId, organization, projectId) {
+    const cached = byScopeId.get(scopeId)
+    if (cached) {
+      return { ok: true, data: cached }
+    }
+    const response = await api.request({
+      method: 'GET',
+      path: `/${projectId}/_apis/wit/workitemtypes`,
+      organization
+    })
+    if (!response.ok) {
+      return response
+    }
+    if (!Array.isArray(response.data.value)) {
+      return failure('unavailable', 'Azure DevOps returned a project with no work item type list.')
+    }
+    const index = indexProject(response.data.value)
+    byScopeId.set(scopeId, index)
+    return { ok: true, data: index }
+  }
+
   return {
-    /** Loads one project's state metastates. Failures are not cached: they
-     *  degrade this call to the name table, not every later one. */
+    /** Best-effort: a project whose types cannot be read falls back to the
+     *  name table rather than failing the page it was loaded for. */
     async prime(scopeId, organization, projectId) {
-      if (byScopeId.has(scopeId)) {
-        return
-      }
-      const response = await api.request({
-        method: 'GET',
-        path: `/${projectId}/_apis/wit/workitemtypes`,
-        organization
-      })
-      if (!response.ok || !Array.isArray(response.data.value)) {
-        return
-      }
-      byScopeId.set(scopeId, indexProjectStates(response.data.value))
+      await load(scopeId, organization, projectId)
+    },
+
+    /** Unlike `prime`, propagates the failure: an empty type list would read
+     *  as "this project offers nothing to create". */
+    async creatableTypes(scopeId, organization, projectId) {
+      const loaded = await load(scopeId, organization, projectId)
+      return loaded.ok ? { ok: true, data: loaded.data.creatable } : loaded
     },
 
     categoryOf(scopeId, workItemType, stateName) {

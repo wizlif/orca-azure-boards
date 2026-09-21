@@ -4,7 +4,7 @@
   "publisher": "nssf",
   "name": "Azure DevOps Boards",
   "version": "0.1.0",
-  "description": "Reads Azure DevOps Boards work items into the Orca Tasks list.",
+  "description": "Reads and creates Azure DevOps Boards work items in the Orca Tasks list.",
   "engines": { "orca": ">=1.4.0" },
   "pluginApi": 1,
   "main": "main.mjs",

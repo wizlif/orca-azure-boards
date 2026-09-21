@@ -1,9 +1,10 @@
 # Azure DevOps Boards for Orca
 
 Adds an **Azure Boards** source to Orca's Tasks list. It shows the work items of
-every Azure DevOps project you have configured, most recently changed first.
+every Azure DevOps project you have configured, most recently changed first,
+and opens new ones.
 
-Read-only. Plain Node ESM — no dependencies, no build step.
+Plain Node ESM — no dependencies, no build step.
 
 ## What you need configured
 
@@ -14,7 +15,7 @@ the machine that runs Orca:
 | Variable | Value |
 | --- | --- |
 | `ORCA_AZURE_DEVOPS_API_BASE_URL` | Comma-separated organization base URLs, e.g. `https://dev.azure.com/contoso,https://dev.azure.com/contoso-labs` |
-| `ORCA_AZURE_DEVOPS_TOKEN` | A personal access token with **Work Items (Read)** and **Project and Team (Read)** |
+| `ORCA_AZURE_DEVOPS_TOKEN` | A personal access token with **Work Items (Read & write)** and **Project and Team (Read)** |
 
 `ORCA_AZURE_DEVOPS_PAT` works in place of `ORCA_AZURE_DEVOPS_TOKEN`.
 
@@ -45,6 +46,10 @@ install it from its git URL.
 - **Labels** — Azure's `System.Tags`, split on `;` and trimmed. A work item with
   no tags shows no labels.
 - **Links** — each item opens the real work item page in Azure DevOps.
+- **Creating** — a new work item in a chosen project, given a type, a title and
+  an optional description. The types on offer are the project's own, since a
+  process can withdraw one (`isDisabled`); a withdrawn type is not offered.
+  The created item comes back in the same shape a listed one has.
 
 ## Filters and search
 
@@ -73,8 +78,15 @@ it never falls back to returning every item.
 
 ## Current limits
 
-- **Read-only.** No commenting, no state transitions, no assignment, no editing.
-  Orca hides those controls rather than offering a dead button.
+- **Create, then read.** No commenting, no state transitions, no assignment, no
+  editing. Orca hides those controls rather than offering a dead button.
+- **Every enabled type is offered.** Azure marks a type withdrawn by a process
+  (`isDisabled`) on the type list itself, and those are filtered out. It does
+  not mark its own hidden types there — `Test Plan`, `Shared Steps`, `Code
+  Review Request` and the like are only named by a separate
+  `workitemtypecategories` call, so they are still offered.
+- **A new item carries a title and a description only.** Not an assignee, not an
+  area or iteration path, not a parent link.
 - **No pagination.** One page of at most 200 items, whatever Orca asks for.
 - **Projects are not paged.** An organization with more than 500 projects is
   listed only as far as its first 500.
@@ -99,8 +111,8 @@ empty response. This plugin treats a success whose body is not JSON as
 | File | Holds |
 | --- | --- |
 | `main.mjs` | `activate` — registers the task source |
-| `task-source.mjs` | The four methods: `status`, `listScopes`, `listItems`, `getItem` |
+| `task-source.mjs` | The contract methods: `status`, `listScopes`, `listItemTypes`, `listItems`, `getItem`, `createItem` |
 | `boards-api.mjs` | The host proxy call, and the rules for reading its reply |
-| `work-items.mjs` | WIQL (including the search clause), the field batch, and the mapping to Orca's item shape |
-| `state-categories.mjs` | Azure workflow states to Orca's four categories, and the done/open state name lists the filters query on |
+| `work-items.mjs` | WIQL (including the search clause), the field batch, the JSON Patch create, and the mapping to Orca's item shape |
+| `work-item-types.mjs` | One cache of each project's work item types: Azure workflow states to Orca's four categories, the done/open state name lists the filters query on, and the types a new item may be opened as |
 | `board-identifiers.mjs` | Encoding an organization and project into a scope or item id |

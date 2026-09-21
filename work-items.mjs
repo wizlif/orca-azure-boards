@@ -1,6 +1,7 @@
 /**
- * Reads work items: a WIQL query for the ids in the order the board wants
- * them, then a field batch for their contents, then the shape Orca renders.
+ * Reads and opens work items: a WIQL query for the ids in the order the board
+ * wants them, then a field batch for their contents, then the shape Orca
+ * renders — which a newly created item is mapped through too.
  */
 
 import { failure } from './boards-api.mjs'
@@ -17,6 +18,10 @@ const FIELDS = [
   'Microsoft.VSTS.Common.Priority',
   'System.Tags'
 ].join(',')
+
+/** A create carries a JSON Patch document, which its POST cannot signal on
+ *  its own; the host proxy accepts this one media type from a plugin. */
+const JSON_PATCH_CONTENT_TYPE = 'application/json-patch+json'
 
 /** The work items batch endpoint refuses more ids than this in one call. */
 const BATCH_SIZE = 200
@@ -119,6 +124,33 @@ export async function fetchWorkItem(api, { organization, workItemId }) {
   }
   return response.data?.id === undefined
     ? failure('not_found', `Azure DevOps returned no work item ${workItemId}.`)
+    : { ok: true, data: response.data }
+}
+
+/** Azure's create route is POST to the type name prefixed with '$', and its
+ *  body is a JSON Patch document rather than the work item. */
+export async function createWorkItem(
+  api,
+  { organization, projectId, typeName, title, description }
+) {
+  const operations = [{ op: 'add', path: '/fields/System.Title', value: title }]
+  if (description) {
+    operations.push({ op: 'add', path: '/fields/System.Description', value: description })
+  }
+  const response = await api.request({
+    method: 'POST',
+    // The type name is percent-encoded: the proxy refuses any path the URL
+    // parser would rewrite, and a raw space in 'User Story' is exactly that.
+    path: `/${projectId}/_apis/wit/workitems/$${encodeURIComponent(typeName)}`,
+    organization,
+    contentType: JSON_PATCH_CONTENT_TYPE,
+    body: operations
+  })
+  if (!response.ok) {
+    return response
+  }
+  return response.data?.id === undefined
+    ? failure('unavailable', 'Azure DevOps accepted the request but returned no work item.')
     : { ok: true, data: response.data }
 }
 

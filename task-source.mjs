@@ -1,5 +1,5 @@
 /**
- * The read-only Azure Boards task source.
+ * The Azure Boards task source: reads work items, and opens new ones.
  *
  * Every method answers the task source envelope. The central rule: an empty
  * `items` array means the board is empty, and may never stand in for an
@@ -9,9 +9,10 @@
  */
 
 import { createBoardsApi, failure } from './boards-api.mjs'
-import { createStateCategoryIndex } from './state-categories.mjs'
-import { decodeItemId, encodeScopeId, isProjectId } from './board-identifiers.mjs'
+import { createWorkItemTypeIndex } from './work-item-types.mjs'
+import { decodeItemId, decodeScopeId, encodeScopeId, isProjectId } from './board-identifiers.mjs'
 import {
+  createWorkItem,
   escapeWiqlString,
   fetchWorkItem,
   fetchWorkItems,
@@ -28,7 +29,8 @@ const PROJECT_PAGE_SIZE = 500
 const ACCOUNT_LABEL_MAX = 1024
 const MESSAGE_MAX = 4096
 
-const SUPPORTS_READ_ONLY = {
+const SUPPORTS = {
+  create: true,
   comment: false,
   transition: false,
   assign: false,
@@ -44,7 +46,7 @@ const FILTER_ALL_OPEN = 'all-open'
 const FILTER_DONE = 'done'
 
 /** Rendered as chips. `all-open`/`done` need a project's real state
- *  vocabulary (state-categories.mjs), so applying either forces the query
+ *  vocabulary (work-item-types.mjs), so applying either forces the query
  *  down to concrete projects instead of the organization-wide shortcut. */
 const DECLARED_FILTERS = [
   { id: FILTER_ASSIGNED_TO_ME, label: 'Assigned to me' },
@@ -73,7 +75,7 @@ function changedAtOf(workItem) {
 
 export function createAzureBoardsTaskSource(host) {
   const api = createBoardsApi(host)
-  const stateCategories = createStateCategoryIndex(api)
+  const workItemTypes = createWorkItemTypeIndex(api)
 
   async function configuredOrganizations() {
     const organizations = await api.organizations()
@@ -84,6 +86,35 @@ export function createAzureBoardsTaskSource(host) {
       return failure('not_configured', NOT_CONFIGURED)
     }
     return organizations
+  }
+
+  /** A scope id already carries the organization and project GUID, so a scope
+   *  can be addressed without listing every project first. The organization is
+   *  still checked against the configured set, so an id from elsewhere is
+   *  refused here rather than by the proxy. */
+  async function resolveScope(scopeId) {
+    const reference = decodeScopeId(scopeId)
+    if (!reference) {
+      return failure(
+        'validation',
+        'Expected an Azure Boards scope id of the form <organization>/<projectId>.'
+      )
+    }
+    const organizations = await configuredOrganizations()
+    if (!organizations.ok) {
+      return organizations
+    }
+    if (
+      !organizations.data.some(
+        (organization) => organization.toLowerCase() === reference.organization.toLowerCase()
+      )
+    ) {
+      return failure(
+        'not_configured',
+        `Azure DevOps organization ${reference.organization} is not configured on this host.`
+      )
+    }
+    return { ok: true, data: { scopeId, ...reference } }
   }
 
   /** One scope per project across every configured organization. A project is
@@ -161,8 +192,8 @@ export function createAzureBoardsTaskSource(host) {
       clauses.push('[System.AssignedTo] = @Me')
     } else if (filterId === FILTER_ALL_OPEN || filterId === FILTER_DONE) {
       const scopeId = encodeScopeId(plan.organization, plan.projectId)
-      await stateCategories.prime(scopeId, plan.organization, plan.projectId)
-      const doneNames = stateCategories.doneStateNames(scopeId).map(quoteWiql).join(',')
+      await workItemTypes.prime(scopeId, plan.organization, plan.projectId)
+      const doneNames = workItemTypes.doneStateNames(scopeId).map(quoteWiql).join(',')
       clauses.push(
         filterId === FILTER_DONE
           ? `[System.State] IN (${doneNames})`
@@ -194,9 +225,9 @@ export function createAzureBoardsTaskSource(host) {
     }
   }
 
-  /** Resolves the state metastates of only the projects actually on the page,
-   *  so the fan-out is bounded by what the user is about to see. */
-  async function primeStateCategories(entries, scopeByKey) {
+  /** Resolves the types of only the projects actually on the page, so the
+   *  fan-out is bounded by what the user is about to see. */
+  async function primeWorkItemTypes(entries, scopeByKey) {
     const scopes = new Map()
     for (const entry of entries) {
       const scope = scopeByKey.get(`${entry.organization}\u0000${projectNameOf(entry.workItem)}`)
@@ -206,7 +237,7 @@ export function createAzureBoardsTaskSource(host) {
     }
     await Promise.all(
       [...scopes.values()].map((scope) =>
-        stateCategories.prime(scope.id, scope.organization, scope.projectId)
+        workItemTypes.prime(scope.id, scope.organization, scope.projectId)
       )
     )
   }
@@ -249,7 +280,7 @@ export function createAzureBoardsTaskSource(host) {
                     .map((entry) => entry.organization)
                     .join(', ')}. ${unreachable[0].probe.message}`.slice(0, MESSAGE_MAX)
                 },
-          supports: SUPPORTS_READ_ONLY,
+          supports: SUPPORTS,
           filters: DECLARED_FILTERS
         }
       }
@@ -311,7 +342,7 @@ export function createAzureBoardsTaskSource(host) {
         .sort((a, b) => changedAtOf(b.workItem) - changedAtOf(a.workItem))
         .slice(0, limit)
 
-      await primeStateCategories(page, scopeByKey)
+      await primeWorkItemTypes(page, scopeByKey)
 
       const items = page.map((entry) => {
         const scope = scopeByKey.get(
@@ -320,7 +351,7 @@ export function createAzureBoardsTaskSource(host) {
         return toTaskItem(entry.workItem, {
           organization: entry.organization,
           scope: scope ?? null,
-          category: stateCategories.categoryOf(
+          category: workItemTypes.categoryOf(
             scope?.id ?? '',
             workItemTypeOf(entry.workItem),
             stateNameOf(entry.workItem)
@@ -371,7 +402,7 @@ export function createAzureBoardsTaskSource(host) {
           ) ?? null
         : null
       if (scope) {
-        await stateCategories.prime(scope.id, scope.organization, scope.projectId)
+        await workItemTypes.prime(scope.id, scope.organization, scope.projectId)
       }
 
       return {
@@ -379,10 +410,78 @@ export function createAzureBoardsTaskSource(host) {
         data: toTaskItem(workItem.data, {
           organization: reference.organization,
           scope,
-          category: stateCategories.categoryOf(
+          category: workItemTypes.categoryOf(
             scope?.id ?? '',
             workItemTypeOf(workItem.data),
             stateNameOf(workItem.data)
+          )
+        })
+      }
+    },
+
+    async listItemTypes(params) {
+      const scope = await resolveScope(params?.scopeId)
+      if (!scope.ok) {
+        return scope
+      }
+      return workItemTypes.creatableTypes(
+        scope.data.scopeId,
+        scope.data.organization,
+        scope.data.projectId
+      )
+    },
+
+    async createItem(params) {
+      const scope = await resolveScope(params?.scopeId)
+      if (!scope.ok) {
+        return scope
+      }
+      const typeName = params?.typeId
+      const title = params?.title
+      if (typeof typeName !== 'string' || typeName.length === 0) {
+        return failure('validation', 'A work item type is required. Read them from listItemTypes.')
+      }
+      if (typeof title !== 'string' || title.trim().length === 0) {
+        return failure('validation', 'A work item needs a title.')
+      }
+
+      const types = await workItemTypes.creatableTypes(
+        scope.data.scopeId,
+        scope.data.organization,
+        scope.data.projectId
+      )
+      if (!types.ok) {
+        return types
+      }
+      // Checked here rather than left to Azure, which answers an unknown type
+      // with a 404 that reads as "the project is gone".
+      if (!types.data.some((type) => type.id === typeName)) {
+        return failure(
+          'validation',
+          `Work item type "${typeName}" is not offered by this project.`
+        )
+      }
+
+      const created = await createWorkItem(api, {
+        organization: scope.data.organization,
+        projectId: scope.data.projectId,
+        typeName,
+        title: title.trim(),
+        description: typeof params?.description === 'string' ? params.description : undefined
+      })
+      if (!created.ok) {
+        return created
+      }
+
+      return {
+        ok: true,
+        data: toTaskItem(created.data, {
+          organization: scope.data.organization,
+          scope: { id: scope.data.scopeId, projectId: scope.data.projectId },
+          category: workItemTypes.categoryOf(
+            scope.data.scopeId,
+            workItemTypeOf(created.data),
+            stateNameOf(created.data)
           )
         })
       }

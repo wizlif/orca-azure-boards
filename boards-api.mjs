@@ -64,7 +64,7 @@ export function createBoardsApi(host) {
     },
 
     /** Resolves `{ ok: true, data }` only for a 2xx carrying a JSON object. */
-    async request({ method, path, organization, query, body }) {
+    async request({ method, path, organization, query, body, contentType }) {
       let response
       try {
         response = await host.call('azureDevOps.boardsRequest', {
@@ -72,7 +72,8 @@ export function createBoardsApi(host) {
           path,
           ...(organization === undefined ? {} : { organization }),
           ...(query === undefined ? {} : { query }),
-          ...(body === undefined ? {} : { body })
+          ...(body === undefined ? {} : { body }),
+          ...(contentType === undefined ? {} : { contentType })
         })
       } catch (error) {
         return describeHostCallError(error)
