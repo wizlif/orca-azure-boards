@@ -141,11 +141,14 @@ function toAssignee(identity) {
   if (typeof id !== 'string' || typeof displayName !== 'string' || displayName.length === 0) {
     return null
   }
-  const avatarUrl = identity.imageUrl ?? identity._links?.avatar?.href ?? null
   return {
     id: id.slice(0, 512),
     displayName: displayName.slice(0, TITLE_MAX),
-    avatarUrl: typeof avatarUrl === 'string' ? avatarUrl.slice(0, URL_MAX) : null
+    // Azure's avatar URLs (imageUrl / _links.avatar.href) are auth-gated: an
+    // unauthenticated GET 302s to sign-in. The renderer holds no credentials
+    // (the PAT lives in the main process) and the host deliberately doesn't
+    // proxy avatar bytes, so sending one only produces a broken image.
+    avatarUrl: null
   }
 }
 
