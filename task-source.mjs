@@ -12,6 +12,7 @@ import { createBoardsApi, failure } from './boards-api.mjs'
 import { createStateCategoryIndex } from './state-categories.mjs'
 import { decodeItemId, encodeScopeId, isProjectId } from './board-identifiers.mjs'
 import {
+  escapeWiqlString,
   fetchWorkItem,
   fetchWorkItems,
   projectNameOf,
@@ -37,6 +38,24 @@ const SUPPORTS_READ_ONLY = {
 
 const NOT_CONFIGURED =
   'No Azure DevOps organization is configured. Set ORCA_AZURE_DEVOPS_API_BASE_URL to a comma-separated list of organization base URLs, plus ORCA_AZURE_DEVOPS_TOKEN.'
+
+const FILTER_ASSIGNED_TO_ME = 'assigned-to-me'
+const FILTER_ALL_OPEN = 'all-open'
+const FILTER_DONE = 'done'
+
+/** Rendered as chips. `all-open`/`done` need a project's real state
+ *  vocabulary (state-categories.mjs), so applying either forces the query
+ *  down to concrete projects instead of the organization-wide shortcut. */
+const DECLARED_FILTERS = [
+  { id: FILTER_ASSIGNED_TO_ME, label: 'Assigned to me' },
+  { id: FILTER_ALL_OPEN, label: 'All open' },
+  { id: FILTER_DONE, label: 'Done' }
+]
+const DECLARED_FILTER_IDS = new Set(DECLARED_FILTERS.map((filter) => filter.id))
+
+function quoteWiql(value) {
+  return `'${escapeWiqlString(value)}'`
+}
 
 function clampLimit(limit) {
   if (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1) {
@@ -108,9 +127,15 @@ export function createAzureBoardsTaskSource(host) {
   }
 
   /** With no scope selected, one organization-wide query stands in for every
-   *  project in it — far fewer requests than one query per project. */
-  function plansFor(scopes, scopeIds) {
+   *  project in it — far fewer requests than one query per project.
+   *  `expandToProjects` forces one plan per project instead: a `done`/
+   *  `all-open` filter clause needs each project's own state names, which
+   *  only exist once a plan names a project. */
+  function plansFor(scopes, scopeIds, expandToProjects) {
     if (scopeIds.length === 0) {
+      if (expandToProjects) {
+        return scopes.map((scope) => ({ organization: scope.organization, projectId: scope.projectId }))
+      }
       const organizations = [...new Set(scopes.map((scope) => scope.organization))]
       return organizations.map((organization) => ({ organization, projectId: null }))
     }
@@ -124,8 +149,32 @@ export function createAzureBoardsTaskSource(host) {
     return plans
   }
 
-  async function collectWorkItems(plan, limit) {
-    const ids = await queryWorkItemIds(api, { ...plan, limit })
+  /** Builds the WIQL clauses for `search` and `filterId` on top of the plan's
+   *  own project scoping. `all-open`/`done` prime the plan's project state
+   *  vocabulary first, since the clause names real state values. */
+  async function extraClausesFor(plan, { search, filterId }) {
+    const clauses = []
+    if (search) {
+      clauses.push(`[System.Title] CONTAINS ${quoteWiql(search)}`)
+    }
+    if (filterId === FILTER_ASSIGNED_TO_ME) {
+      clauses.push('[System.AssignedTo] = @Me')
+    } else if (filterId === FILTER_ALL_OPEN || filterId === FILTER_DONE) {
+      const scopeId = encodeScopeId(plan.organization, plan.projectId)
+      await stateCategories.prime(scopeId, plan.organization, plan.projectId)
+      const doneNames = stateCategories.doneStateNames(scopeId).map(quoteWiql).join(',')
+      clauses.push(
+        filterId === FILTER_DONE
+          ? `[System.State] IN (${doneNames})`
+          : `[System.State] NOT IN (${doneNames})`
+      )
+    }
+    return clauses
+  }
+
+  async function collectWorkItems(plan, limit, query) {
+    const extraClauses = await extraClausesFor(plan, query)
+    const ids = await queryWorkItemIds(api, { ...plan, limit, extraClauses })
     if (!ids.ok) {
       return ids
     }
@@ -200,7 +249,8 @@ export function createAzureBoardsTaskSource(host) {
                     .map((entry) => entry.organization)
                     .join(', ')}. ${unreachable[0].probe.message}`.slice(0, MESSAGE_MAX)
                 },
-          supports: SUPPORTS_READ_ONLY
+          supports: SUPPORTS_READ_ONLY,
+          filters: DECLARED_FILTERS
         }
       }
     },
@@ -219,6 +269,16 @@ export function createAzureBoardsTaskSource(host) {
     async listItems(params) {
       const limit = clampLimit(params?.limit)
       const scopeIds = Array.isArray(params?.scopeIds) ? params.scopeIds : []
+      const filterId = params?.filterId ?? null
+      if (filterId !== null && !DECLARED_FILTER_IDS.has(filterId)) {
+        return failure(
+          'validation',
+          `Unknown filter "${filterId}". Known filters: ${[...DECLARED_FILTER_IDS].join(', ')}.`
+        )
+      }
+      const search = typeof params?.search === 'string' && params.search.trim().length > 0
+        ? params.search.trim()
+        : null
       const scopes = await loadScopes()
       if (!scopes.ok) {
         return scopes
@@ -230,8 +290,11 @@ export function createAzureBoardsTaskSource(host) {
         return failure('not_found', `No Azure Boards project matches scope ${unknown[0]}.`)
       }
 
+      const expandToProjects = filterId === FILTER_ALL_OPEN || filterId === FILTER_DONE
       const results = await Promise.all(
-        plansFor(scopes.data, scopeIds).map((plan) => collectWorkItems(plan, limit))
+        plansFor(scopes.data, scopeIds, expandToProjects).map((plan) =>
+          collectWorkItems(plan, limit, { search, filterId })
+        )
       )
       const firstFailure = results.find((result) => !result.ok)
       if (firstFailure) {

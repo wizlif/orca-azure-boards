@@ -51,6 +51,10 @@ function fromStateName(stateName) {
   return CATEGORY_BY_STATE_NAME.get(String(stateName).trim().toLowerCase()) ?? 'unknown'
 }
 
+/** Used only when a project's real state metastates could not be read: a
+ *  best-effort guess at terminal state names, in Azure's own casing. */
+const FALLBACK_DONE_STATE_NAMES = ['Closed', 'Completed', 'Removed', 'Done', 'Cancelled', 'Rejected']
+
 function indexProjectStates(workItemTypes) {
   const byTypeAndState = new Map()
   const byState = new Map()
@@ -98,6 +102,21 @@ export function createStateCategoryIndex(api) {
         index.byState.get(stateName) ??
         fromStateName(stateName)
       )
+    },
+
+    /** Real state names, in this project's own vocabulary, whose metastate is
+     *  `done` (Completed or Removed). Falls back to a generic guess when the
+     *  project's types were not primed or carried no states, so a done/open
+     *  filter still narrows the query instead of being dropped silently. */
+    doneStateNames(scopeId) {
+      const index = byScopeId.get(scopeId)
+      if (!index) {
+        return FALLBACK_DONE_STATE_NAMES
+      }
+      const names = [...index.byState.entries()]
+        .filter(([, category]) => category === 'done')
+        .map(([name]) => name)
+      return names.length > 0 ? names : FALLBACK_DONE_STATE_NAMES
     }
   }
 }

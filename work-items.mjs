@@ -13,7 +13,9 @@ const FIELDS = [
   'System.WorkItemType',
   'System.AssignedTo',
   'System.ChangedDate',
-  'System.TeamProject'
+  'System.TeamProject',
+  'Microsoft.VSTS.Common.Priority',
+  'System.Tags'
 ].join(',')
 
 /** The work items batch endpoint refuses more ids than this in one call. */
@@ -22,21 +24,36 @@ const BATCH_SIZE = 200
 const TITLE_MAX = 1024
 const STATE_NAME_MAX = 256
 const URL_MAX = 2048
+const PRIORITY_MAX = 128
+const LABEL_MAX = 128
+const LABELS_MAX = 32
+
+/** WIQL has no parameterized query API; a literal embedded in a clause must
+ *  double its single quotes or an apostrophe both breaks the query and lets
+ *  the rest of the literal escape the string. */
+export function escapeWiqlString(value) {
+  return value.replace(/'/g, "''")
+}
 
 /** A project-scoped WIQL URL supplies the `@project` macro but does not by
  *  itself restrict the result set, so the clause is what scopes the query. */
-function wiqlFor(projectId) {
-  const where = projectId ? ' WHERE [System.TeamProject] = @project' : ''
+function wiqlFor(projectId, extraClauses) {
+  const clauses = []
+  if (projectId) {
+    clauses.push('[System.TeamProject] = @project')
+  }
+  clauses.push(...extraClauses)
+  const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : ''
   return `SELECT [System.Id] FROM WorkItems${where} ORDER BY [System.ChangedDate] DESC`
 }
 
-export async function queryWorkItemIds(api, { organization, projectId, limit }) {
+export async function queryWorkItemIds(api, { organization, projectId, limit, extraClauses = [] }) {
   const response = await api.request({
     method: 'POST',
     path: projectId ? `/${projectId}/_apis/wit/wiql` : '/_apis/wit/wiql',
     organization,
     query: { $top: String(limit) },
-    body: { query: wiqlFor(projectId) }
+    body: { query: wiqlFor(projectId, extraClauses) }
   })
   if (!response.ok) {
     return response
@@ -137,6 +154,31 @@ export function projectNameOf(workItem) {
   return typeof name === 'string' ? name : null
 }
 
+/** Azure's priority is numeric (1-4, lower is more urgent) and the scale
+ *  isn't uniform across processes, so it is shown as-is rather than mapped
+ *  to a High/Medium/Low label the plugin would be inventing. */
+function toPriority(value) {
+  if (value === null || value === undefined) {
+    return null
+  }
+  const text = String(value).trim()
+  return text.length > 0 ? text.slice(0, PRIORITY_MAX) : null
+}
+
+/** System.Tags is one semicolon-separated string ("a; b; c"), not a list. */
+function toLabels(tags) {
+  if (typeof tags !== 'string') {
+    return undefined
+  }
+  const labels = tags
+    .split(';')
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0)
+    .slice(0, LABELS_MAX)
+    .map((tag) => tag.slice(0, LABEL_MAX))
+  return labels.length > 0 ? labels : undefined
+}
+
 export function toTaskItem(workItem, { organization, scope, category }) {
   const fields = workItem.fields ?? {}
   const workItemId = String(workItem.id)
@@ -154,6 +196,8 @@ export function toTaskItem(workItem, { organization, scope, category }) {
       ),
       category
     },
+    priority: toPriority(fields['Microsoft.VSTS.Common.Priority']),
+    labels: toLabels(fields['System.Tags']),
     assignee: toAssignee(fields['System.AssignedTo']),
     url: typeof htmlUrl === 'string' ? htmlUrl.slice(0, URL_MAX) : null,
     updatedAt: toIsoDate(fields['System.ChangedDate']),
