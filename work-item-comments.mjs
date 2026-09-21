@@ -103,6 +103,20 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;')
 }
 
+/** The exact set `escapeMarkdown` (html-to-markdown.mjs) puts a backslash in
+ *  front of: the always-escaped punctuation, `<` and `&` when they would
+ *  otherwise start a tag or entity, and a leading list marker's own char. */
+const MARKDOWN_ESCAPE = /\\([\\`*_[\]#>|~<&+.)-])/g
+
+/** Reverses `escapeMarkdown` before HTML-escaping, so a quoted `\<b\>` becomes
+ *  the literal text `<b>` — which `escapeHtml` then turns into `&lt;b&gt;` —
+ *  instead of a literal backslash. Without this the backslash survives into
+ *  the stored HTML as a real character, and the next read escapes the `<`
+ *  again on top of it, compounding on every quote. */
+function unescapeMarkdown(text) {
+  return text.replace(MARKDOWN_ESCAPE, '$1')
+}
+
 /** The one inline construct the reply composer emits (`**Name wrote:**`).
  *  Escaping first and only wrapping the escaped runs means a literal `<` or
  *  `&` inside or outside a bold span can never be read back as markup. */
@@ -112,11 +126,11 @@ function renderInline(line) {
   const marker = /\*\*(.+?)\*\*/
   let match
   while ((match = marker.exec(rest)) !== null) {
-    out += escapeHtml(rest.slice(0, match.index))
-    out += `<strong>${escapeHtml(match[1])}</strong>`
+    out += escapeHtml(unescapeMarkdown(rest.slice(0, match.index)))
+    out += `<strong>${escapeHtml(unescapeMarkdown(match[1]))}</strong>`
     rest = rest.slice(match.index + match[0].length)
   }
-  return out + escapeHtml(rest)
+  return out + escapeHtml(unescapeMarkdown(rest))
 }
 
 /** A line starting with Markdown's `>` is a quoted line; Orca's own reply
