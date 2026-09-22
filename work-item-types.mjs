@@ -157,6 +157,19 @@ export function createWorkItemTypeIndex(api) {
       return loaded.ok ? { ok: true, data: loaded.data.creatable } : loaded
     },
 
+    /** Every state name this project declares, deduplicated across its types,
+     *  with the metastate category each one maps to. Propagates the failure
+     *  for the same reason `creatableTypes` does. */
+    async states(scopeId, organization, projectId) {
+      const loaded = await load(scopeId, organization, projectId)
+      return loaded.ok
+        ? {
+            ok: true,
+            data: [...loaded.data.byState.entries()].map(([name, category]) => ({ name, category }))
+          }
+        : loaded
+    },
+
     categoryOf(scopeId, workItemType, stateName) {
       const index = byScopeId.get(scopeId)
       if (!index) {

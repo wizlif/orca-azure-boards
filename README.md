@@ -63,17 +63,50 @@ install it from its git URL.
   `Microsoft.HiddenCategory`. The created item comes back in the same shape a
   listed one has.
 
-## Filters and search
+## Facets and search
 
-`Status` declares three filter presets, rendered as chips:
+`Status` declares four filter facets. Each one is `dynamic`: its options vary per
+project, so they are read with `listFacetOptions` for the scopes on screen rather
+than declared up front.
+
+| Facet | Kind | Options | WIQL |
+| --- | --- | --- | --- |
+| State | multi | Each project's real workflow states, deduplicated across its types and ordered to do → in progress → done | `[System.State] IN (...)` |
+| Sprint | single | Every iteration under the project, as the full path `System.IterationPath` carries, most recent first | `[System.IterationPath] = '<path>'` |
+| Assignee | multi | `Me`, `Unassigned`, and the members of the project's default team | `[System.AssignedTo] = @Me` / `= ''` / `= '<sign-in address>'`, ORed together |
+| Type | multi | The same creatable types the create form offers | `[System.WorkItemType] IN (...)` |
+
+Facets combine as AND across facets and OR within one multi-select facet. A facet
+with no selection is no constraint at all — never a default. In particular the
+assignee facet does not quietly default to "Me", or there would be no way to ask
+for every assignee.
+
+The sprint facet matches the chosen iteration exactly rather than with `UNDER`:
+the person picked one sprint, not its sub-iterations.
+
+Two limits are worth knowing. Iterations are listed whole, including past ones:
+narrowing to current-and-future needs a team's settings, which live under the
+`work` namespace the host proxy does not expose. And only the default team's
+members are offered, so someone who is on another team of the same project has to
+be reached by clearing the facet rather than by picking them.
+
+A selection naming a facet that does not exist, an option that does not exist in
+the selected scope, or two options on the single-select sprint facet all fail with
+`validation` rather than being dropped. Because every option id is matched against
+the options actually resolved for the scope, an invented id never reaches a query
+at all; it is also escaped on the way in, the same way a search term is.
+
+The `filterId` presets (`assigned-to-me`, `all-open`, `done`) are no longer
+declared — facets cover the same ground — but they are still honoured, so a client
+older than facets keeps working:
 
 | Filter | WIQL |
 | --- | --- |
-| Assigned to me | `[System.AssignedTo] = @Me` |
-| All open | `[System.State] NOT IN (<this project's Completed/Removed state names>)` |
-| Done | `[System.State] IN (<this project's Completed/Removed state names>)` |
+| `assigned-to-me` | `[System.AssignedTo] = @Me` |
+| `all-open` | `[System.State] NOT IN (<this project's Completed/Removed state names>)` |
+| `done` | `[System.State] IN (<this project's Completed/Removed state names>)` |
 
-"All open" and "Done" read each project's real workflow states (the same lookup
+`all-open` and `done` read each project's real workflow states (the same lookup
 `State` uses) rather than guessing at names like "Closed" or "Done" — a custom
 process's terminal states ("QA Sign-off", "Won't Fix") are picked up correctly.
 Picking either one, with no project scope selected, queries every configured
@@ -179,10 +212,11 @@ empty response. This plugin treats a success whose body is not JSON as
 | File | Holds |
 | --- | --- |
 | `main.mjs` | `activate` — registers the task source |
-| `task-source.mjs` | The contract methods: `status`, `listScopes`, `listItemTypes`, `listItems`, `getItem`, `listComments`, `createItem` |
+| `task-source.mjs` | The contract methods: `status`, `listScopes`, `listItemTypes`, `listFacetOptions`, `listItems`, `getItem`, `listComments`, `createItem` |
 | `boards-api.mjs` | The host proxy call, and the rules for reading its reply |
-| `work-items.mjs` | WIQL (including the search clause), the field batch, the JSON Patch create, and the mapping to Orca's item and detail shapes |
+| `work-item-facets.mjs` | The filter facets: what each declares, the options it carries for a scope, and the WIQL a selection composes into |
+| `work-items.mjs` | WIQL (including the search clause and the quoting every literal goes through), the field batch, the JSON Patch create, and the mapping to Orca's item and detail shapes |
 | `work-item-comments.mjs` | One page of comments, in the shape Orca renders them |
 | `html-to-markdown.mjs` | The HTML-to-markdown conversion every body goes through |
-| `work-item-types.mjs` | One cache of each project's work item types: Azure workflow states to Orca's four categories, the done/open state name lists the filters query on, and the types a new item may be opened as |
+| `work-item-types.mjs` | One cache of each project's work item types: Azure workflow states to Orca's four categories, the state names the State facet and the done/open filters query on, and the types a new item may be opened as |
 | `board-identifiers.mjs` | Encoding an organization and project into a scope or item id |

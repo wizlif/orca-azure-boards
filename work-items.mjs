@@ -49,6 +49,11 @@ export function escapeWiqlString(value) {
   return value.replace(/'/g, "''")
 }
 
+/** The only way a caller-supplied value may enter a clause. */
+export function quoteWiql(value) {
+  return `'${escapeWiqlString(value)}'`
+}
+
 /** A project-scoped WIQL URL supplies the `@project` macro but does not by
  *  itself restrict the result set, so the clause is what scopes the query. */
 function wiqlFor(projectId, extraClauses) {

@@ -10,16 +10,17 @@
  */
 
 import { createBoardsApi, failure } from './boards-api.mjs'
+import { createWorkItemFacets, DECLARED_FACETS } from './work-item-facets.mjs'
 import { createWorkItemTypeIndex } from './work-item-types.mjs'
 import { decodeItemId, decodeScopeId, encodeScopeId, isProjectId } from './board-identifiers.mjs'
 import { fetchComments, postComment } from './work-item-comments.mjs'
 import {
   createWorkItem,
-  escapeWiqlString,
   fetchWorkItem,
   fetchWorkItems,
   projectNameOf,
   queryWorkItemIds,
+  quoteWiql,
   stateNameOf,
   toTaskItem,
   toTaskItemDetail,
@@ -51,19 +52,12 @@ const FILTER_ASSIGNED_TO_ME = 'assigned-to-me'
 const FILTER_ALL_OPEN = 'all-open'
 const FILTER_DONE = 'done'
 
-/** Rendered as chips. `all-open`/`done` need a project's real state
- *  vocabulary (work-item-types.mjs), so applying either forces the query
- *  down to concrete projects instead of the organization-wide shortcut. */
-const DECLARED_FILTERS = [
-  { id: FILTER_ASSIGNED_TO_ME, label: 'Assigned to me' },
-  { id: FILTER_ALL_OPEN, label: 'All open' },
-  { id: FILTER_DONE, label: 'Done' }
-]
-const DECLARED_FILTER_IDS = new Set(DECLARED_FILTERS.map((filter) => filter.id))
-
-function quoteWiql(value) {
-  return `'${escapeWiqlString(value)}'`
-}
+/** No longer declared in `status`: facets cover the same ground composably.
+ *  Still honoured, because a client older than facets sends one of these on
+ *  its own. `all-open`/`done` need a project's real state vocabulary
+ *  (work-item-types.mjs), so applying either forces the query down to
+ *  concrete projects instead of the organization-wide shortcut. */
+const DECLARED_FILTER_IDS = new Set([FILTER_ASSIGNED_TO_ME, FILTER_ALL_OPEN, FILTER_DONE])
 
 function clampLimit(limit) {
   if (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1) {
@@ -82,6 +76,7 @@ function changedAtOf(workItem) {
 export function createAzureBoardsTaskSource(host) {
   const api = createBoardsApi(host)
   const workItemTypes = createWorkItemTypeIndex(api)
+  const facets = createWorkItemFacets({ api, workItemTypes })
 
   async function configuredOrganizations() {
     const organizations = await api.organizations()
@@ -202,6 +197,28 @@ export function createAzureBoardsTaskSource(host) {
     return { ok: true, data: scopes }
   }
 
+  /** The projects a call answers for: the named ones, or every configured one
+   *  when none is named. An id that matches nothing fails rather than being
+   *  dropped, which would answer for a wider board than was asked for. */
+  async function targetScopes(scopeIds) {
+    const scopes = await loadScopes()
+    if (!scopes.ok) {
+      return scopes
+    }
+    if (scopeIds.length === 0) {
+      return { ok: true, data: { all: scopes.data, selected: scopes.data } }
+    }
+    const selected = []
+    for (const scopeId of scopeIds) {
+      const scope = scopes.data.find((candidate) => candidate.id === scopeId)
+      if (!scope) {
+        return failure('not_found', `No Azure Boards project matches scope ${scopeId}.`)
+      }
+      selected.push(scope)
+    }
+    return { ok: true, data: { all: scopes.data, selected } }
+  }
+
   /** With no scope selected, one organization-wide query stands in for every
    *  project in it — far fewer requests than one query per project.
    *  `expandToProjects` forces one plan per project instead: a `done`/
@@ -226,10 +243,12 @@ export function createAzureBoardsTaskSource(host) {
   }
 
   /** Builds the WIQL clauses for `search` and `filterId` on top of the plan's
-   *  own project scoping. `all-open`/`done` prime the plan's project state
-   *  vocabulary first, since the clause names real state values. */
-  async function extraClausesFor(plan, { search, filterId }) {
-    const clauses = []
+   *  own project scoping, and appends the facet clauses, which are resolved
+   *  once for the whole query rather than per plan. `all-open`/`done` prime
+   *  the plan's project state vocabulary first, since the clause names real
+   *  state values. */
+  async function extraClausesFor(plan, { search, filterId, facetClauses }) {
+    const clauses = [...facetClauses]
     if (search) {
       clauses.push(`[System.Title] CONTAINS ${quoteWiql(search)}`)
     }
@@ -326,7 +345,7 @@ export function createAzureBoardsTaskSource(host) {
                     .join(', ')}. ${unreachable[0].probe.message}`.slice(0, MESSAGE_MAX)
                 },
           supports: SUPPORTS,
-          filters: DECLARED_FILTERS
+          facets: DECLARED_FACETS
         }
       }
     },
@@ -355,21 +374,21 @@ export function createAzureBoardsTaskSource(host) {
       const search = typeof params?.search === 'string' && params.search.trim().length > 0
         ? params.search.trim()
         : null
-      const scopes = await loadScopes()
-      if (!scopes.ok) {
-        return scopes
+      const target = await targetScopes(scopeIds)
+      if (!target.ok) {
+        return target
       }
-      const unknown = scopeIds.filter((scopeId) =>
-        scopes.data.every((scope) => scope.id !== scopeId)
-      )
-      if (unknown.length > 0) {
-        return failure('not_found', `No Azure Boards project matches scope ${unknown[0]}.`)
+      const allScopes = target.data.all
+
+      const facetClauses = await facets.buildClauses(params?.facetSelections, target.data.selected)
+      if (!facetClauses.ok) {
+        return facetClauses
       }
 
       const expandToProjects = filterId === FILTER_ALL_OPEN || filterId === FILTER_DONE
       const results = await Promise.all(
-        plansFor(scopes.data, scopeIds, expandToProjects).map((plan) =>
-          collectWorkItems(plan, limit, { search, filterId })
+        plansFor(allScopes, scopeIds, expandToProjects).map((plan) =>
+          collectWorkItems(plan, limit, { search, filterId, facetClauses: facetClauses.data })
         )
       )
       const firstFailure = results.find((result) => !result.ok)
@@ -378,7 +397,7 @@ export function createAzureBoardsTaskSource(host) {
       }
 
       const scopeByKey = new Map(
-        scopes.data.map((scope) => [`${scope.organization}\u0000${scope.projectName}`, scope])
+        allScopes.map((scope) => [`${scope.organization}\u0000${scope.projectName}`, scope])
       )
       // Truncate before resolving state categories: the trailing items are
       // dropped, and their projects need no lookup.
@@ -497,6 +516,20 @@ export function createAzureBoardsTaskSource(host) {
         workItemId: reference.workItemId,
         body: params?.body
       })
+    },
+
+    /** Answers for the scopes the caller is listing under, so a facet never
+     *  offers an option no item on screen could carry. */
+    async listFacetOptions(params) {
+      const facetId = params?.facetId
+      if (typeof facetId !== 'string' || facetId.length === 0) {
+        return failure('validation', 'A facet id is required. Read them from status().facets.')
+      }
+      const target = await targetScopes(Array.isArray(params?.scopeIds) ? params.scopeIds : [])
+      if (!target.ok) {
+        return target
+      }
+      return facets.listOptions(facetId, target.data.selected)
     },
 
     async listItemTypes(params) {
