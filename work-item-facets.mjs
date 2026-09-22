@@ -3,8 +3,9 @@
  * options it carries for a set of scopes, and the WIQL they compose into.
  *
  * Combination is AND across facets and OR within a multi-select one. An absent
- * facet is no constraint at all, never a default — a defaulted assignee would
- * leave no way to ask for every assignee.
+ * facet is no constraint at all. Only `defaultOptionIds` opens a facet already
+ * narrowed, and clearing it stays available, so every assignee is still
+ * reachable.
  *
  * Every option id is checked against the options actually resolved for the
  * scope before it reaches a clause, so a value the client invented is refused
@@ -19,12 +20,28 @@ export const FACET_SPRINT = 'sprint'
 export const FACET_ASSIGNEE = 'assignee'
 export const FACET_TYPE = 'type'
 
+/** Not identities: `@Me` resolves against the token's own account, and an
+ *  unassigned item has no identity to name. Neither can collide with the
+ *  sign-in addresses the other options are keyed by. */
+const ASSIGNEE_ME = '@me'
+const ASSIGNEE_UNASSIGNED = '@unassigned'
+
 /** Every dimension is `dynamic`: state names, iterations, team members and
- *  work item types are all per-project, so none can be declared up front. */
+ *  work item types are all per-project, so none can be declared up front.
+ *
+ *  A board holds every team's work, so the useful first screen is the signed-in
+ *  user's own. No other dimension has an answer that is right before the user
+ *  has said anything, so no other declares a default. */
 export const DECLARED_FACETS = [
   { id: FACET_STATE, label: 'State', kind: 'multi', dynamic: true },
   { id: FACET_SPRINT, label: 'Sprint', kind: 'single', dynamic: true },
-  { id: FACET_ASSIGNEE, label: 'Assignee', kind: 'multi', dynamic: true },
+  {
+    id: FACET_ASSIGNEE,
+    label: 'Assignee',
+    kind: 'multi',
+    dynamic: true,
+    defaultOptionIds: [ASSIGNEE_ME]
+  },
   { id: FACET_TYPE, label: 'Type', kind: 'multi', dynamic: true }
 ]
 
@@ -36,12 +53,6 @@ const FIELD_BY_FACET = {
   [FACET_ASSIGNEE]: '[System.AssignedTo]',
   [FACET_TYPE]: '[System.WorkItemType]'
 }
-
-/** Not identities: `@Me` resolves against the token's own account, and an
- *  unassigned item has no identity to name. Neither can collide with the
- *  sign-in addresses the other options are keyed by. */
-const ASSIGNEE_ME = '@me'
-const ASSIGNEE_UNASSIGNED = '@unassigned'
 
 /** The contract's ceiling on one facet's options and on one selection. */
 const OPTIONS_MAX = 200
