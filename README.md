@@ -6,6 +6,35 @@ and opens new ones.
 
 Plain Node ESM — no dependencies, no build step.
 
+## What it looks like
+
+The Azure source sits beside Orca's built-in trackers as its own tab:
+
+![The Azure Boards tab beside the built-in GitHub and Jira tabs](docs/screenshots/01-source-bar.png)
+
+Work items, grouped by state, with filter facets for state, sprint, assignee and
+type, plus a project scope picker and title search:
+
+![The work item list with its facet bar](docs/screenshots/02-list-and-facets.png)
+
+Each facet reads its options from the projects on screen, so a customized
+workflow's own states are what you filter on:
+
+![The State facet open, listing the board's real workflow states](docs/screenshots/03-facet-open.png)
+
+Opening an item shows its description and discussion, and lets you post a
+comment or quote one in a reply:
+
+![The detail panel showing a description, comments and quoted replies](docs/screenshots/04-detail-panel.png)
+
+Starting a workspace from an item carries the item with it, so the workspace
+stays linked to the work:
+
+![Start workspace, with the work item attached as a linked source](docs/screenshots/05-start-workspace.png)
+
+Content in these captures is substituted — see
+[`docs/screenshots/README.md`](docs/screenshots/README.md).
+
 ## What you need configured
 
 The plugin never sees your credentials. Orca holds them, picks the origin and
