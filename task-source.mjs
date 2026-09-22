@@ -380,15 +380,24 @@ export function createAzureBoardsTaskSource(host) {
       }
       const allScopes = target.data.all
 
-      const facetClauses = await facets.buildClauses(params?.facetSelections, target.data.selected)
-      if (!facetClauses.ok) {
-        return facetClauses
+      const query = await facets.buildQuery(params?.facetSelections, target.data.selected)
+      if (!query.ok) {
+        return query
       }
 
       const expandToProjects = filterId === FILTER_ALL_OPEN || filterId === FILTER_DONE
+      // A facet-narrowed scope list replaces the fan-out rather than filtering
+      // it: it is already one plan per project, and an empty one means no scope
+      // can hold a match, so no query is issued at all.
+      const plans = query.data.scopes
+        ? query.data.scopes.map((scope) => ({
+            organization: scope.organization,
+            projectId: scope.projectId
+          }))
+        : plansFor(allScopes, scopeIds, expandToProjects)
       const results = await Promise.all(
-        plansFor(allScopes, scopeIds, expandToProjects).map((plan) =>
-          collectWorkItems(plan, limit, { search, filterId, facetClauses: facetClauses.data })
+        plans.map((plan) =>
+          collectWorkItems(plan, limit, { search, filterId, facetClauses: query.data.clauses })
         )
       )
       const firstFailure = results.find((result) => !result.ok)

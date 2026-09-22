@@ -10,6 +10,9 @@
  * Every option id is checked against the options actually resolved for the
  * scope before it reaches a clause, so a value the client invented is refused
  * rather than embedded; the literal is escaped on top of that.
+ *
+ * A facet may also narrow which scopes the query runs against at all, because
+ * an iteration path only exists inside the project that owns it.
  */
 
 import { failure } from './boards-api.mjs'
@@ -25,6 +28,27 @@ export const FACET_TYPE = 'type'
  *  sign-in addresses the other options are keyed by. */
 const ASSIGNEE_ME = '@me'
 const ASSIGNEE_UNASSIGNED = '@unassigned'
+
+/** A sprint option id carries the scope that owns the iteration, because the
+ *  path alone cannot be resolved back to one: it starts with a project *name*,
+ *  and names repeat across organizations while the plugin addresses projects
+ *  by GUID. NUL is the separator — no organization name, project GUID or
+ *  classification node name may contain one, so no path, however spelled, can
+ *  be misread as a scope boundary. */
+const SPRINT_SCOPE_SEPARATOR = '\u0000'
+
+function encodeSprintOptionId(scopeId, path) {
+  return `${scopeId}${SPRINT_SCOPE_SEPARATOR}${path}`
+}
+
+function decodeSprintOptionId(optionId) {
+  const separator = optionId.indexOf(SPRINT_SCOPE_SEPARATOR)
+  if (separator <= 0) {
+    return null
+  }
+  const path = optionId.slice(separator + 1)
+  return path.length > 0 ? { scopeId: optionId.slice(0, separator), path } : null
+}
 
 /** Every dimension is `dynamic`: state names, iterations, team members and
  *  work item types are all per-project, so none can be declared up front.
@@ -136,7 +160,7 @@ export function createWorkItemFacets({ api, workItemTypes }) {
     }
     const options = flattenIterations(response.data)
       .sort((a, b) => iterationRank(b) - iterationRank(a) || a.path.localeCompare(b.path))
-      .map((iteration) => toOption(iteration.path, iteration.path))
+      .map((iteration) => toOption(encodeSprintOptionId(scope.id, iteration.path), iteration.path))
     iterationsByScopeId.set(scope.id, options)
     return { ok: true, data: options }
   }
@@ -272,17 +296,25 @@ export function createWorkItemFacets({ api, workItemTypes }) {
   return {
     listOptions,
 
-    /** One WIQL clause per selected facet, to be ANDed onto the query. The
-     *  query schema cannot hold a `single` facet to one option — it never sees
-     *  the declaration that names the kind — so that is enforced here. */
-    async buildClauses(facetSelections, scopes) {
+    /** The WIQL for one listing: a clause per selected facet, to be ANDed
+     *  together, and the scopes it may run against.
+     *
+     *  `scopes` is null when nothing narrows the fan-out. A selected sprint
+     *  narrows it to the project that owns the iteration; an empty array means
+     *  that project is outside this listing, so nothing can match and nothing
+     *  is queried.
+     *
+     *  The query schema cannot hold a `single` facet to one option — it never
+     *  sees the declaration that names the kind — so that is enforced here. */
+    async buildQuery(facetSelections, scopes) {
       if (facetSelections === undefined || facetSelections === null) {
-        return { ok: true, data: [] }
+        return { ok: true, data: { clauses: [], scopes: null } }
       }
       if (typeof facetSelections !== 'object' || Array.isArray(facetSelections)) {
         return failure('validation', 'facetSelections must be an object keyed by facet id.')
       }
       const clauses = []
+      let narrowedScopes = null
       for (const [facetId, optionIds] of Object.entries(facetSelections)) {
         const facet = FACET_BY_ID.get(facetId)
         if (!facet) {
@@ -303,6 +335,38 @@ export function createWorkItemFacets({ api, workItemTypes }) {
             `Facet "${facetId}" accepts one option, not ${optionIds.length}.`
           )
         }
+        if (facetId === FACET_SPRINT) {
+          const sprint = decodeSprintOptionId(optionIds[0])
+          // An id saved before sprint ids carried a scope names no project, so
+          // it is no constraint at all until the renderer retires it against
+          // the options now offered. Standing in for it with an empty board
+          // would be a worse lie than showing one sprint too many.
+          if (!sprint) {
+            continue
+          }
+          const owner = scopes.find((scope) => scope.id === sprint.scopeId)
+          // The owning project is outside this listing, so nothing in it can
+          // match. Saying so by querying nothing, rather than by sending the
+          // path somewhere it does not exist.
+          if (!owner) {
+            narrowedScopes = []
+            continue
+          }
+          const iterations = await iterationOptions(owner)
+          if (!iterations.ok) {
+            return iterations
+          }
+          if (!iterations.data.some((option) => option.id === optionIds[0])) {
+            return failure(
+              'validation',
+              `Facet "sprint" has no option "${sprint.path}" in ${owner.name ?? owner.id}.`
+            )
+          }
+          narrowedScopes = [owner]
+          // The path, not the option id: the clause names what Azure stores.
+          clauses.push(clauseFor(facet, [sprint.path]))
+          continue
+        }
         const options = await listOptions(facetId, scopes)
         if (!options.ok) {
           return options
@@ -317,7 +381,7 @@ export function createWorkItemFacets({ api, workItemTypes }) {
         }
         clauses.push(clauseFor(facet, optionIds))
       }
-      return { ok: true, data: clauses }
+      return { ok: true, data: { clauses, scopes: narrowedScopes } }
     }
   }
 }

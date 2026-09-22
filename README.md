@@ -84,6 +84,25 @@ for every assignee.
 The sprint facet matches the chosen iteration exactly rather than with `UNDER`:
 the person picked one sprint, not its sub-iterations.
 
+Sprint is also the one facet that narrows the fan-out instead of only adding a
+clause. An iteration path belongs to the project that owns it, and Azure answers
+a path it does not recognise with `TF51011` and a failed query — not with zero
+rows, the way an unknown state, type or assignee does. With two organizations
+configured and every project selected, sending one project's sprint to all of
+them therefore broke the whole list. So a sprint option id carries its scope:
+
+    <organization>/<projectId>\u0000<iteration path>
+
+The separator is NUL because no organization name, project GUID or classification
+node name may contain one, so no path can be misread as a scope boundary. The
+picker still shows only the iteration path. A selected sprint runs one query,
+against its owning project alone; if that project is outside the current scope
+selection the listing is empty, since nothing there could have matched anyway.
+
+Sprint ids saved before they carried a scope no longer name any option, so Orca
+retires them once it has re-read the facet's options. Until it does, such an id
+is treated as no sprint filter rather than as an empty board.
+
 Two limits are worth knowing. Iterations are listed whole, including past ones:
 narrowing to current-and-future needs a team's settings, which live under the
 `work` namespace the host proxy does not expose. And only the default team's
@@ -94,7 +113,9 @@ A selection naming a facet that does not exist, an option that does not exist in
 the selected scope, or two options on the single-select sprint facet all fail with
 `validation` rather than being dropped. Because every option id is matched against
 the options actually resolved for the scope, an invented id never reaches a query
-at all; it is also escaped on the way in, the same way a search term is.
+at all; it is also escaped on the way in, the same way a search term is. The one
+selection that is narrowed rather than refused is a sprint belonging to a project
+outside the listing, described above — it names a real scope, just not one here.
 
 The `filterId` presets (`assigned-to-me`, `all-open`, `done`) are no longer
 declared — facets cover the same ground — but they are still honoured, so a client
